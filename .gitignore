@@ -1,0 +1,10 @@
+# wrangler local cache/state (contains account info; never commit)
+.wrangler/
+
+# node
+node_modules/
+npm-debug.log*
+
+# env / secrets
+.dev.vars
+.env
