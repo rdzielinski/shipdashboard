@@ -143,6 +143,86 @@ function fmtLon(v){const h=v>=0?'E':'W';v=Math.abs(v);const d=Math.floor(v);retu
 /* ---------- world map ---------- */
 const cv=document.getElementById('map'),g=cv.getContext('2d');
 let hi=null;
+/* ---- click-to-zoom state ---- */
+let view={k:1,lon:0,lat:0};   // k=1,lon=0,lat=0 reproduces the full-world default view
+let dots=[];                  // screen positions of each ship, refreshed by drawMap (for hit-testing)
+let selected=null;            // mmsi of the focused ship, or null
+let zanim=null;
+function animateTo(t){
+  const s={k:view.k,lon:view.lon,lat:view.lat},t0=performance.now(),dur=560;
+  if(zanim)cancelAnimationFrame(zanim);
+  (function step(now){
+    const p=Math.min(1,(now-t0)/dur),e=p<.5?2*p*p:1-Math.pow(-2*p+2,2)/2; // easeInOutQuad
+    view.k=s.k+(t.k-s.k)*e;view.lon=s.lon+(t.lon-s.lon)*e;view.lat=s.lat+(t.lat-s.lat)*e;
+    drawMap();
+    if(p<1)zanim=requestAnimationFrame(step);else zanim=null;
+  })(performance.now());
+}
+function selectShip(mmsi){
+  const s=SHIPS.find(x=>x.mmsi===mmsi);if(!s)return;
+  selected=mmsi;hi=mmsi;
+  animateTo({k:5,lon:s.lon,lat:s.lat});
+  showInfo(s);renderCards();highlightCard(mmsi);
+}
+function resetView(){
+  selected=null;hi=null;
+  animateTo({k:1,lon:0,lat:0});
+  hideInfo();renderCards();
+}
+function highlightCard(mmsi){
+  document.querySelectorAll('.ship').forEach(el=>el.classList.toggle('selected',el.dataset.mmsi===mmsi));
+  if(mmsi){const el=document.querySelector('.ship[data-mmsi="'+mmsi+'"]');if(el)el.scrollIntoView({behavior:'smooth',block:'nearest'});}
+}
+/* info panel injected so the saved markup stays untouched */
+const zpanel=document.createElement('div');zpanel.className='zpanel';cv.parentElement.appendChild(zpanel);
+(function(){const st=document.createElement('style');st.textContent=
+  '.ship{cursor:pointer}.ship.selected{border-color:var(--gold-bright);box-shadow:0 0 0 1px rgba(243,215,154,.45)}'+
+  '.zpanel{position:absolute;top:12px;right:12px;width:232px;max-width:48%;background:rgba(6,18,40,.88);border:1px solid var(--hairline);border-radius:6px;padding:12px 13px;backdrop-filter:blur(4px);opacity:0;transform:translateY(-6px);pointer-events:none;transition:opacity .25s,transform .25s;z-index:6}'+
+  '.zpanel.show{opacity:1;transform:none;pointer-events:auto}'+
+  '.zpanel .zname{font-family:"Barlow Condensed",sans-serif;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gold-bright);font-size:18px;line-height:1.1}'+
+  '.zpanel .zsub{color:var(--ink-dim);font-size:11px;margin:2px 0 8px}'+
+  '.zpanel .zstat{font-size:11px;font-family:"Roboto Mono",monospace;margin-bottom:9px}'+
+  '.zpanel .zstat.live{color:var(--live)}.zpanel .zstat.approx{color:var(--approx)}'+
+  '.zpanel .zgrid{margin:0;display:grid;gap:0}'+
+  '.zpanel .zgrid>div{display:flex;justify-content:space-between;gap:10px;border-top:1px solid rgba(216,176,102,.12);padding:5px 0}'+
+  '.zpanel dt{color:var(--ink-faint);font-size:10px;text-transform:uppercase;letter-spacing:.07em}'+
+  '.zpanel dd{margin:0;color:var(--ink);font-family:"Roboto Mono",monospace;font-size:12px;text-align:right}'+
+  '.zpanel .zclose{margin-top:11px;width:100%;background:rgba(216,176,102,.12);border:1px solid var(--hairline);color:var(--gold-bright);font-family:"Barlow Condensed",sans-serif;letter-spacing:.12em;text-transform:uppercase;font-size:11px;padding:7px;border-radius:4px;cursor:pointer}'+
+  '.zpanel .zclose:hover{background:rgba(216,176,102,.22)}';
+  document.head.appendChild(st);})();
+function showInfo(s){
+  const wx=s.wx,wl=wx?wxInfo(wx.code)[0]:'—';
+  zpanel.innerHTML=
+    '<div class="zname">'+s.name+'</div>'+
+    '<div class="zsub">'+s.cls+' class · '+s.region+'</div>'+
+    '<div class="zstat '+(s.live?'live':'approx')+'">'+(s.live?'● LIVE AIS':'● approximate position')+'</div>'+
+    '<dl class="zgrid">'+
+      '<div><dt>Position</dt><dd>'+fmtLat(s.lat)+' '+fmtLon(s.lon)+'</dd></div>'+
+      (s.cog!=null?'<div><dt>Course</dt><dd>'+compass16(s.cog)+' · '+Math.round(s.cog)+'°</dd></div>':'')+
+      (s.live&&s.sog!=null?'<div><dt>Speed</dt><dd>'+s.sog.toFixed(1)+' kts</dd></div>':'')+
+      (wx?'<div><dt>Weather</dt><dd>'+Math.round(wx.tF)+'°F · '+wl+'</dd></div>':'')+
+      (wx?'<div><dt>Wind</dt><dd>'+compass16(wx.wdir)+' '+Math.round(wx.wkt)+' kts</dd></div>':'')+
+      (s.live&&s.ts?'<div><dt>Updated</dt><dd>'+new Date(s.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+'</dd></div>':'')+
+      '<div><dt>MMSI</dt><dd>'+s.mmsi+'</dd></div>'+
+    '</dl>'+
+    '<button class="zclose">← All ships</button>';
+  zpanel.querySelector('.zclose').onclick=resetView;
+  zpanel.classList.add('show');
+}
+function hideInfo(){zpanel.classList.remove('show');zpanel.innerHTML='';}
+/* canvas interactions: click a dot to focus it, click empty space to reset */
+cv.addEventListener('click',e=>{
+  const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+  let hit=null,bd=18;
+  for(const d of dots){const dist=Math.hypot(d.x-mx,d.y-my);if(dist<bd){bd=dist;hit=d.mmsi;}}
+  if(hit)hit===selected?resetView():selectShip(hit);
+  else if(selected)resetView();
+});
+cv.addEventListener('mousemove',e=>{
+  const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+  const over=dots.some(d=>Math.hypot(d.x-mx,d.y-my)<15);
+  cv.style.cursor=over?'pointer':(selected?'zoom-out':'default');
+});
 function drawMap(){
   const dpr=Math.min(devicePixelRatio||1,2);
   const W=cv.clientWidth,H=cv.clientHeight;
@@ -150,19 +230,23 @@ function drawMap(){
   g.clearRect(0,0,W,H);
   g.fillStyle='#0c2f5e';g.fillRect(0,0,W,H);
   const latMax=80,sx=W/360,sy=H/(2*latMax);
-  const P=(lon,lat)=>[(lon+180)*sx,(latMax-lat)*sy];
+  const baseP=(lon,lat)=>[(lon+180)*sx,(latMax-lat)*sy];
+  const[ccx,ccy]=baseP(view.lon,view.lat);
+  const P=(lon,lat)=>{const b=baseP(lon,lat);return[(b[0]-ccx)*view.k+W/2,(b[1]-ccy)*view.k+H/2];};
   g.strokeStyle='rgba(216,176,102,.07)';g.lineWidth=1;
-  for(let lon=-150;lon<=150;lon+=30){g.beginPath();g.moveTo(P(lon,latMax)[0],0);g.lineTo(P(lon,-latMax)[0],H);g.stroke();}
-  for(let lat=-60;lat<=60;lat+=30){const y=P(0,lat)[1];g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke();}
+  for(let lon=-180;lon<=180;lon+=30){const a=P(lon,latMax),b=P(lon,-latMax);g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(b[0],b[1]);g.stroke();}
+  for(let lat=-60;lat<=60;lat+=30){const a=P(-180,lat),b=P(180,lat);g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(b[0],b[1]);g.stroke();}
   g.fillStyle='#27433c';g.strokeStyle='#3c5d50';g.lineWidth=.6;
   for(const ring of WORLD){g.beginPath();for(let i=0;i<ring.length;i++){const[x,y]=P(ring[i][0],ring[i][1]);i?g.lineTo(x,y):g.moveTo(x,y);}g.closePath();g.fill();g.stroke();}
+  dots=[];
   for(const s of SHIPS){
-    const[x,y]=P(s.lon,s.lat),you=s.you;
-    if(hi===s.mmsi){g.strokeStyle=you?'rgba(255,211,77,.9)':'rgba(127,182,255,.9)';g.lineWidth=2;g.beginPath();g.arc(x,y,13,0,7);g.stroke();}
+    const[x,y]=P(s.lon,s.lat),you=s.you,sel=selected===s.mmsi;
+    dots.push({mmsi:s.mmsi,x,y});
+    if(hi===s.mmsi||sel){g.strokeStyle=you?'rgba(255,211,77,.9)':'rgba(127,182,255,.9)';g.lineWidth=2;g.beginPath();g.arc(x,y,sel?16:13,0,7);g.stroke();}
     g.fillStyle=you?'#ffd34d':'#7fb6ff';g.strokeStyle='#06182f';g.lineWidth=1.4;
     g.beginPath();g.arc(x,y,you?5.5:4,0,7);g.fill();g.stroke();
     g.fillStyle=s.live?'#74e6a6':'#c9a25a';g.beginPath();g.arc(x+(you?7:6),y-(you?7:6),2.3,0,7);g.fill();
-    g.font=(you?'700 ':'600 ')+'12px Barlow Condensed, sans-serif';
+    g.font=(you?'700 ':'600 ')+(sel?'14px ':'12px ')+'Barlow Condensed, sans-serif';
     const lbl=s.name.replace('Disney ','');const tw=g.measureText(lbl).width;
     let lx=x+9;if(lx+tw+6>W)lx=x-9-tw-6;
     g.fillStyle='rgba(6,18,40,.66)';g.fillRect(lx-2,y-8,tw+6,16);
@@ -179,9 +263,11 @@ function renderCards(){
     const tempHtml = wx? `${Math.round(wx.tF)}<small>°F</small>` : '<small style="font-size:14px">—</small>';
     const condHtml = wx? `${lab}<br><span class="wind">${compass16(wx.wdir)} ${Math.round(wx.wkt)} kts</span>` : 'awaiting data';
     const el=document.createElement('div');
-    el.className='ship'+(s.you?' you':'');
-    el.onmouseenter=()=>{hi=s.mmsi;drawMap();};
-    el.onmouseleave=()=>{hi=null;drawMap();};
+    el.className='ship'+(s.you?' you':'')+(selected===s.mmsi?' selected':'');
+    el.dataset.mmsi=s.mmsi;
+    el.onmouseenter=()=>{if(!selected){hi=s.mmsi;drawMap();}};
+    el.onmouseleave=()=>{if(!selected){hi=null;drawMap();}};
+    el.onclick=()=>{selected===s.mmsi?resetView():selectShip(s.mmsi);};
     el.innerHTML=`
       <div class="top">
         <div><span class="nm">${s.name.replace('Disney ','')}</span>${s.you?'<span class="you-tag">YOUR SHIP</span>':''}
@@ -223,7 +309,8 @@ async function loadPositions(){
   try{
     const r=await fetch(POSITIONS_URL);if(!r.ok)throw 0;
     const j=await r.json();
-    for(const s of SHIPS){const p=j[s.mmsi];if(p&&isFinite(p.lat)&&isFinite(p.lon)){s.lat=p.lat;s.lon=p.lon;s.live=true;if(p.cog!=null)s.cog=p.cog;}}
+    for(const s of SHIPS){const p=j[s.mmsi];if(p&&isFinite(p.lat)&&isFinite(p.lon)){s.lat=p.lat;s.lon=p.lon;s.live=true;if(p.cog!=null)s.cog=p.cog;if(p.sog!=null)s.sog=p.sog;if(p.heading!=null&&p.heading!==511)s.heading=p.heading;if(p.ts)s.ts=p.ts;}}
+    if(selected){const s=SHIPS.find(x=>x.mmsi===selected);if(s&&!zanim){view.lon=s.lon;view.lat=s.lat;showInfo(s);}}
     drawMap();renderCards();
   }catch(e){/* keep approx positions */}
 }
@@ -233,6 +320,7 @@ function tick(){document.getElementById('clock').textContent=new Date().toLocale
 document.getElementById('note').innerHTML=
   '<b>How it runs.</b> Weather is pulled live from Open-Meteo (free, no key) for each ship’s location and refreshes every 15 min. '+
   'Ship dots show <span style="color:var(--live)">green</span> when fed by live AIS and <span style="color:var(--approx)">gold</span> when using approximate homeport positions. '+
+  '<b>Click any ship</b> — on the map or its card — to zoom in and read its full details; click empty water or “← All ships” to zoom back out. '+
   'To make positions live, set <code>POSITIONS_URL</code> at the top of the script to your Cloudflare Worker endpoint that serves <code>{ "&lt;mmsi&gt;": {lat,lon,cog,ts} }</code> '+
   '— fed by an aisstream.io collector running on your always-on PC, written to KV. All eight MMSIs are already wired in.';
 
