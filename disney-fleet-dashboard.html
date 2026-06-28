@@ -149,7 +149,12 @@ let dots=[];                  // screen positions of each ship, refreshed by dra
 let selected=null;            // mmsi of the focused ship, or null
 let follow=false;             // keep the view centred on the selected ship as live fixes move it
 let zanim=null;
-const trails={};              // mmsi -> array of recent [lon,lat] drawn as a fading track
+const trails={};              // mmsi -> array of recent [lon,lat,t] drawn as a fading track
+let trailWin=6*3600e3;        // visible trail-history window in ms (default 6h)
+const TRAIL_MAXAGE=72*3600e3,TRAIL_MAXPTS=800,TRAIL_KEY='disneyfleet.trails.v1',TRAILWIN_KEY='disneyfleet.trailwin.v1';
+function pruneTrail(tr){const cut=Date.now()-TRAIL_MAXAGE;while(tr.length&&tr[0][2]<cut)tr.shift();if(tr.length>TRAIL_MAXPTS)tr.splice(0,tr.length-TRAIL_MAXPTS);return tr;}
+function saveTrails(){try{localStorage.setItem(TRAIL_KEY,JSON.stringify(trails));}catch(_){}}
+function loadTrails(){try{const raw=localStorage.getItem(TRAIL_KEY);if(raw){const o=JSON.parse(raw);for(const k in o)if(Array.isArray(o[k]))trails[k]=pruneTrail(o[k].filter(p=>p&&p.length>=3));}const w=localStorage.getItem(TRAILWIN_KEY);if(w)trailWin=w==='all'?Infinity:+w;}catch(_){}}
 function animateTo(t){
   const s={k:view.k,lon:view.lon,lat:view.lat},t0=performance.now(),dur=560;
   if(zanim)cancelAnimationFrame(zanim);
@@ -192,8 +197,19 @@ const zpanel=document.createElement('div');zpanel.className='zpanel';cv.parentEl
   '.zpanel dt{color:var(--ink-faint);font-size:10px;text-transform:uppercase;letter-spacing:.07em}'+
   '.zpanel dd{margin:0;color:var(--ink);font-family:"Roboto Mono",monospace;font-size:12px;text-align:right}'+
   '.zpanel .zclose{margin-top:11px;width:100%;background:rgba(216,176,102,.12);border:1px solid var(--hairline);color:var(--gold-bright);font-family:"Barlow Condensed",sans-serif;letter-spacing:.12em;text-transform:uppercase;font-size:11px;padding:7px;border-radius:4px;cursor:pointer}'+
-  '.zpanel .zclose:hover{background:rgba(216,176,102,.22)}';
+  '.zpanel .zclose:hover{background:rgba(216,176,102,.22)}'+
+  '.trailctl{position:absolute;right:12px;bottom:10px;display:flex;gap:2px;align-items:center;background:rgba(6,18,40,.62);border:1px solid var(--hairline);border-radius:4px;padding:3px 4px;font-family:"Roboto Mono",monospace;z-index:5}'+
+  '.trailctl .tlab{color:var(--ink-faint);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:0 5px}'+
+  '.trailctl button{background:transparent;border:0;color:var(--ink-dim);font:inherit;font-size:11px;padding:3px 7px;border-radius:3px;cursor:pointer}'+
+  '.trailctl button:hover{color:var(--ink)}'+
+  '.trailctl button.on{background:rgba(116,230,166,.16);color:var(--live)}';
   document.head.appendChild(st);})();
+/* trail-history window control */
+const tctl=document.createElement('div');tctl.className='trailctl';
+{const lab=document.createElement('span');lab.className='tlab';lab.textContent='Trail';tctl.appendChild(lab);
+ [['1h',3600e3],['6h',6*3600e3],['24h',24*3600e3],['All',Infinity]].forEach(([t,ms])=>{const b=document.createElement('button');b.textContent=t;b.dataset.ms=ms===Infinity?'all':String(ms);b.onclick=()=>{trailWin=ms;try{localStorage.setItem(TRAILWIN_KEY,ms===Infinity?'all':String(ms));}catch(_){}syncTrailCtl();drawMap();};tctl.appendChild(b);});}
+cv.parentElement.appendChild(tctl);
+function syncTrailCtl(){[...tctl.children].forEach(c=>{if(c.dataset.ms!=null)c.classList.toggle('on',(c.dataset.ms==='all'?Infinity:+c.dataset.ms)===trailWin);});}
 function showInfo(s){
   const wx=s.wx,wl=wx?wxInfo(wx.code)[0]:'—';
   zpanel.innerHTML=
@@ -276,9 +292,11 @@ function drawMap(){
   for(let lat=-60;lat<=60;lat+=30){const a=P(-180,lat),b=P(180,lat);g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(b[0],b[1]);g.stroke();}
   g.fillStyle='#27433c';g.strokeStyle='#3c5d50';g.lineWidth=.6;
   for(const ring of WORLD){g.beginPath();for(let i=0;i<ring.length;i++){const[x,y]=P(ring[i][0],ring[i][1]);i?g.lineTo(x,y):g.moveTo(x,y);}g.closePath();g.fill();g.stroke();}
-  // recent-position trails, fading toward the latest fix
+  // recent-position trails, limited to the chosen history window, fading toward the latest fix
+  const trailCut=Date.now()-trailWin;
   for(const s of SHIPS){
-    const tr=trails[s.mmsi];if(!tr||tr.length<2)continue;
+    const all=trails[s.mmsi];if(!all||all.length<2)continue;
+    const tr=trailWin===Infinity?all:all.filter(p=>p[2]>=trailCut);if(tr.length<2)continue;
     g.lineCap='round';g.lineWidth=selected===s.mmsi?2.6:1.6;
     for(let i=1;i<tr.length;i++){
       const a=P(tr[i-1][0],tr[i-1][1]),b=P(tr[i][0],tr[i][1]);
@@ -365,7 +383,8 @@ async function loadPositions(){
   try{
     const r=await fetch(POSITIONS_URL);if(!r.ok)throw 0;
     const j=await r.json();
-    for(const s of SHIPS){const p=j[s.mmsi];if(p&&isFinite(p.lat)&&isFinite(p.lon)){s.lat=p.lat;s.lon=p.lon;s.live=true;if(p.cog!=null)s.cog=p.cog;if(p.sog!=null)s.sog=p.sog;if(p.heading!=null&&p.heading!==511)s.heading=p.heading;if(p.ts)s.ts=p.ts;const tr=trails[s.mmsi]||(trails[s.mmsi]=[]),last=tr[tr.length-1];if(!last||last[0]!==s.lon||last[1]!==s.lat){tr.push([s.lon,s.lat]);if(tr.length>40)tr.shift();}}}
+    for(const s of SHIPS){const p=j[s.mmsi];if(p&&isFinite(p.lat)&&isFinite(p.lon)){s.lat=p.lat;s.lon=p.lon;s.live=true;if(p.cog!=null)s.cog=p.cog;if(p.sog!=null)s.sog=p.sog;if(p.heading!=null&&p.heading!==511)s.heading=p.heading;if(p.ts)s.ts=p.ts;const tt=Date.parse(s.ts||'')||Date.now(),tr=trails[s.mmsi]||(trails[s.mmsi]=[]),last=tr[tr.length-1];if(!last||last[0]!==s.lon||last[1]!==s.lat){tr.push([s.lon,s.lat,tt]);pruneTrail(tr);}}}
+    saveTrails();
     if(selected&&follow){const s=SHIPS.find(x=>x.mmsi===selected);if(s&&!zanim){view.lon=s.lon;view.lat=s.lat;clampView();showInfo(s);}}
     drawMap();renderCards();
   }catch(e){/* keep approx positions */}
@@ -378,10 +397,11 @@ document.getElementById('note').innerHTML=
   'Ship dots show <span style="color:var(--live)">green</span> when fed by live AIS and <span style="color:var(--approx)">gold</span> when using approximate homeport positions. '+
   '<b>Click any ship</b> — on the map or its card — to zoom in and read its full details; click empty water or “← All ships” to zoom back out. '+
   'Scroll to zoom anywhere, drag to pan, and watch the green trail build behind each ship as live fixes arrive; the small arrow shows each ship’s heading. '+
+  'Use the <b>Trail</b> control on the map to choose how much history to show (1h / 6h / 24h / All); tracks are saved in your browser and persist across reloads. '+
   'To make positions live, set <code>POSITIONS_URL</code> at the top of the script to your Cloudflare Worker endpoint that serves <code>{ "&lt;mmsi&gt;": {lat,lon,cog,ts} }</code> '+
   '— fed by an aisstream.io collector running on your always-on PC, written to KV. All eight MMSIs are already wired in.';
 
-drawMap();renderCards();tick();
+loadTrails();syncTrailCtl();drawMap();renderCards();tick();
 setInterval(tick,1000);
 loadWeather();loadPositions();
 setInterval(loadWeather,15*60*1000);
