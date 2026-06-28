@@ -1,0 +1,15 @@
+name = "disney-ais"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+
+# 1) Create the KV namespace:
+#      npx wrangler kv namespace create POSITIONS
+#    then paste the printed id below.
+# 2) Set the shared secret the collector uses:
+#      npx wrangler secret put INGEST_SECRET
+# 3) Deploy:
+#      npx wrangler deploy
+
+[[kv_namespaces]]
+binding = "POSITIONS"
+id = "PASTE_YOUR_KV_NAMESPACE_ID"

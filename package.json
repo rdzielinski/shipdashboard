@@ -1,0 +1,16 @@
+{
+  "name": "disney-ais-collector",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Relays Disney Cruise Line AIS positions from aisstream.io to a Cloudflare Worker.",
+  "scripts": {
+    "start": "node collector.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
